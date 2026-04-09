@@ -944,8 +944,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       if constexpr (__n == 4)
 	{
 	  __type __uh
-	    = (static_cast<__type>(_M_x[1]) << __w)
-		| (static_cast<__type>(_M_x[0]) + 1);
+	    = ((static_cast<__type>(_M_x[1]) << __w)
+		| static_cast<__type>(_M_x[0])) + 1;
 	  __type __lh
 	    = (static_cast<__type>(_M_x[3]) << __w)
 		| static_cast<__type>(_M_x[2]);
@@ -964,8 +964,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       else
 	{
 	  __type __num =
-		  (static_cast<__type>(_M_x[1]) << __w)
-		  | (static_cast<__type>(_M_x[0]) + 1);
+		  ((static_cast<__type>(_M_x[1]) << __w)
+		  | static_cast<__type>(_M_x[0])) + 1;
 	  _M_x[0] = __num & max();
 	  _M_x[1] = (__num >> __w) & max();
 	}
