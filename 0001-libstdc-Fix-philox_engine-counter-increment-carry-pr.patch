@@ -1,0 +1,147 @@
+From 883575fc17cd3801977ceaac766ff67b6ba7b78d Mon Sep 17 00:00:00 2001
+From: ElenaTyuleneva <elena.tyuleneva@intel.com>
+Date: Thu, 9 Apr 2026 07:24:07 -0700
+Subject: [PATCH] libstdc++: Fix philox_engine counter increment carry
+ propagation
+
+The philox counter increment that happens in philox_engine::_M_transition(),
+applies +1 to _M_x[0] before the bitwise OR with (_M_x[1] << __w), so the carry
+from _M_x[0] is merged into the _M_x[1] portion rather
+than being added to it. This causes the counter to cycle prematurely
+and never advance past {0, 0, 1, 2^w - 1}.
+
+Fix by changing operations order, which results in forming the full-width value
+from _M_x[1]:_M_x[0] and then adding 1 on both the n == 4 and n == 2 paths.
+
+libstdc++-v3/ChangeLog:
+
+    * include/bits/random.tcc (philox_engine::operator()): Fix
+    counter increment to propagate carry correctly.
+    * testsuite/26_numerics/random/philox_engine/operators/counter_carry.cc:
+    New test.
+
+Signed-off-by: ElenaTyuleneva <elena.tyuleneva@intel.com>
+---
+ libstdc++-v3/include/bits/random.tcc          |  8 +-
+ .../philox_engine/operators/counter_carry.cc  | 83 +++++++++++++++++++
+ 2 files changed, 87 insertions(+), 4 deletions(-)
+ create mode 100644 libstdc++-v3/testsuite/26_numerics/random/philox_engine/operators/counter_carry.cc
+
+diff --git a/libstdc++-v3/include/bits/random.tcc b/libstdc++-v3/include/bits/random.tcc
+index 7a63e868a89..3380b63f355 100644
+--- a/libstdc++-v3/include/bits/random.tcc
++++ b/libstdc++-v3/include/bits/random.tcc
+@@ -944,8 +944,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
+       if constexpr (__n == 4)
+ 	{
+ 	  __type __uh
+-	    = (static_cast<__type>(_M_x[1]) << __w)
+-		| (static_cast<__type>(_M_x[0]) + 1);
++	    = ((static_cast<__type>(_M_x[1]) << __w)
++		| static_cast<__type>(_M_x[0])) + 1;
+ 	  __type __lh
+ 	    = (static_cast<__type>(_M_x[3]) << __w)
+ 		| static_cast<__type>(_M_x[2]);
+@@ -964,8 +964,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
+       else
+ 	{
+ 	  __type __num =
+-		  (static_cast<__type>(_M_x[1]) << __w)
+-		  | (static_cast<__type>(_M_x[0]) + 1);
++		  ((static_cast<__type>(_M_x[1]) << __w)
++		  | static_cast<__type>(_M_x[0])) + 1;
+ 	  _M_x[0] = __num & max();
+ 	  _M_x[1] = (__num >> __w) & max();
+ 	}
+diff --git a/libstdc++-v3/testsuite/26_numerics/random/philox_engine/operators/counter_carry.cc b/libstdc++-v3/testsuite/26_numerics/random/philox_engine/operators/counter_carry.cc
+new file mode 100644
+index 00000000000..b1527f6a67b
+--- /dev/null
++++ b/libstdc++-v3/testsuite/26_numerics/random/philox_engine/operators/counter_carry.cc
+@@ -0,0 +1,83 @@
++// { dg-do run { target c++26 } }
++
++// N5014 29.5.4.5 Class Template philox_engine
++
++#include <random>
++#include <array>
++
++#include <testsuite_hooks.h>
++
++// Helper: set counter, skip one block (n outputs), then compare
++// the next block against a reference engine at the expected counter.
++template<typename Engine, std::size_t N>
++void
++verify_carry(const std::array<typename Engine::result_type, N>& current_counter,
++	         const std::array<typename Engine::result_type, N>& expected_incremented_counter)
++{
++  Engine eng_a;
++  eng_a.set_counter(current_counter);
++  // Skip the block produced from current_counter
++  eng_a.discard(N);
++
++  Engine eng_b;
++  eng_b.set_counter(expected_incremented_counter);
++
++  // Both engines should now produce identical output
++  for (std::size_t i = 0; i < N; ++i)
++    VERIFY( eng_a() == eng_b() );
++}
++
++
++int main()
++{
++  // philox4x32 (n=4, w=32)
++  verify_carry<std::philox4x32, 4>(std::array<std::philox4x32::result_type, 4>{0, 0, 0, 5},
++                                   std::array<std::philox4x32::result_type, 4>{0, 0, 0, 6});
++  verify_carry<std::philox4x32, 4>(std::array<std::philox4x32::result_type, 4>{0, 0, 0, 0xFFFFFFFF},
++                                   std::array<std::philox4x32::result_type, 4>{0, 0, 1, 0});
++  verify_carry<std::philox4x32, 4>(std::array<std::philox4x32::result_type, 4>{0, 0, 1, 0xFFFFFFFF},
++                                   std::array<std::philox4x32::result_type, 4>{0, 0, 2, 0});
++  verify_carry<std::philox4x32, 4>(std::array<std::philox4x32::result_type, 4>{0, 0, 0xFFFFFFFF, 0xFFFFFFFF},
++                                   std::array<std::philox4x32::result_type, 4>{0, 1, 0, 0});
++  verify_carry<std::philox4x32, 4>(std::array<std::philox4x32::result_type, 4>{0, 1, 0xFFFFFFFF, 0xFFFFFFFF},
++                                   std::array<std::philox4x32::result_type, 4>{0, 2, 0, 0});
++  verify_carry<std::philox4x32, 4>(std::array<std::philox4x32::result_type, 4>{0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF},
++                                   std::array<std::philox4x32::result_type, 4>{0, 0, 0, 0});
++  
++  // philox4x64 (n=4, w=64)
++  constexpr auto philox4x64_max = std::philox4x64::max();
++  verify_carry<std::philox4x64, 4>(std::array<std::philox4x64::result_type, 4>{0, 0, 0, philox4x64_max},
++                                   std::array<std::philox4x64::result_type, 4>{0, 0, 1, 0});
++  verify_carry<std::philox4x64, 4>(std::array<std::philox4x64::result_type, 4>{0, 0, 1, philox4x64_max},
++                                   std::array<std::philox4x64::result_type, 4>{0, 0, 2, 0});
++  verify_carry<std::philox4x64, 4>(std::array<std::philox4x64::result_type, 4>{0, 0, philox4x64_max, philox4x64_max},
++                                   std::array<std::philox4x64::result_type, 4>{0, 1, 0, 0});
++  verify_carry<std::philox4x64, 4>(std::array<std::philox4x64::result_type, 4>{0, 1, philox4x64_max, philox4x64_max},
++                                   std::array<std::philox4x64::result_type, 4>{0, 2, 0, 0});
++  verify_carry<std::philox4x64, 4>(std::array<std::philox4x64::result_type, 4>{philox4x64_max, philox4x64_max, philox4x64_max, philox4x64_max},
++                                   std::array<std::philox4x64::result_type, 4>{0, 0, 0, 0});
++
++  // philox2x32 (n=2, w=32)
++  using philox2x32 = std::philox_engine<std::uint_fast32_t,
++        32, 2, 10, 0xCD9E8D57, 0x9E3779B9>;
++  verify_carry<philox2x32, 2>(std::array<philox2x32::result_type, 2>{0, 5},
++                              std::array<philox2x32::result_type, 2>{0, 6});
++  verify_carry<philox2x32, 2>(std::array<philox2x32::result_type, 2>{0, 0xFFFFFFFF},
++                              std::array<philox2x32::result_type, 2>{1, 0});
++  verify_carry<philox2x32, 2>(std::array<philox2x32::result_type, 2>{1, 0xFFFFFFFF},
++                              std::array<philox2x32::result_type, 2>{2, 0});
++  verify_carry<philox2x32, 2>(std::array<philox2x32::result_type, 2>{0xFFFFFFFF, 0xFFFFFFFF},
++                              std::array<philox2x32::result_type, 2>{0, 0});
++  // philox2x64 (n=2, w=64)
++  using philox2x64 = std::philox_engine<std::uint_fast64_t,
++        64, 2, 10, 0xCD9E8D57, 0x9E3779B9>;
++  constexpr auto philox2x64_max = philox2x64::max();
++  verify_carry<philox2x64, 2>(std::array<philox2x64::result_type, 2>{0, 5},
++                              std::array<philox2x64::result_type, 2>{0, 6});
++  verify_carry<philox2x64, 2>(std::array<philox2x64::result_type, 2>{0, philox2x64_max},
++                              std::array<philox2x64::result_type, 2>{1, 0});
++  verify_carry<philox2x64, 2>(std::array<philox2x64::result_type, 2>{1, philox2x64_max},
++                              std::array<philox2x64::result_type, 2>{2, 0});
++  verify_carry<philox2x64, 2>(std::array<philox2x64::result_type, 2>{philox2x64_max, philox2x64_max},
++                              std::array<philox2x64::result_type, 2>{0, 0});
++}
+-- 
+2.40.1
+
